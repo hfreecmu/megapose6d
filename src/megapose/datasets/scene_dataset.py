@@ -72,6 +72,8 @@ def transform_to_list(T: Transform) -> ListPose:
 class ObjectData:
     # NOTE (Yann): bbox_amodal, bbox_modal, visib_fract should be moved to SceneObservation
     label: str
+    score: float = None
+    instance_id: int = None,
     TWO: Optional[Transform] = None
     unique_id: Optional[int] = None
     bbox_amodal: Optional[np.ndarray] = None  # (4, ) array [xmin, ymin, xmax, ymax]
@@ -90,7 +92,7 @@ class ObjectData:
         for k in ("bbox_amodal", "bbox_modal"):
             if getattr(self, k) is not None:
                 d[k] = getattr(self, k).tolist()
-        for k in ("visib_fract", "unique_id"):
+        for k in ("visib_fract", "unique_id", "score", "instance_id"):
             if getattr(self, k) is not None:
                 d[k] = getattr(self, k)
         return d
@@ -114,7 +116,7 @@ class ObjectData:
         for k in ("unique_id", "visib_fract"):
             if k in d:
                 setattr(data, k, d[k])
-        for k in ("bbox_amodal", "bbox_modal"):
+        for k in ("bbox_amodal", "bbox_modal", "score", "instance_id"):
             if k in d:
                 setattr(data, k, np.array(d[k]))
         return data

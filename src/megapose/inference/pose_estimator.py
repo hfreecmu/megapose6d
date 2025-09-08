@@ -522,6 +522,7 @@ class PoseEstimator(torch.nn.Module):
         bsz_objects: Optional[int] = None,
         cuda_timer: bool = False,
         coarse_estimates: Optional[PoseEstimatesType] = None,
+        top_k: int = 1,
     ) -> Tuple[PoseEstimatesType, dict]:
         """Runs the entire pose estimation pipeline.
 
@@ -609,7 +610,7 @@ class PoseEstimator(torch.nn.Module):
 
         # Extract the highest scoring pose estimate for each instance_id
         data_TCO_final_scored = self.filter_pose_estimates(
-            data_TCO_scored, top_K=1, filter_field="pose_logit"
+            data_TCO_scored, top_K=top_k, filter_field="pose_logit"
         )
 
         # Optionally run ICP or TEASER++

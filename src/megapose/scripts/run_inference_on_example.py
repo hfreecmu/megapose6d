@@ -30,6 +30,8 @@ from megapose.utils.logging import get_logger, set_logging_level
 from megapose.visualization.bokeh_plotter import BokehPlotter
 from megapose.visualization.utils import make_contour_overlay
 
+import imageio
+
 logger = get_logger(__name__)
 
 
@@ -176,20 +178,25 @@ def make_output_visualization(
         copy_arrays=True,
     )[0]
 
-    plotter = BokehPlotter()
+    # plotter = BokehPlotter()
 
-    fig_rgb = plotter.plot_image(rgb)
-    fig_mesh_overlay = plotter.plot_overlay(rgb, renderings.rgb)
+    # fig_rgb = plotter.plot_image(rgb)
+    # fig_mesh_overlay = plotter.plot_overlay(rgb, renderings.rgb)
     contour_overlay = make_contour_overlay(
         rgb, renderings.rgb, dilate_iterations=1, color=(0, 255, 0)
     )["img"]
-    fig_contour_overlay = plotter.plot_image(contour_overlay)
-    fig_all = gridplot([[fig_rgb, fig_contour_overlay, fig_mesh_overlay]], toolbar_location=None)
+    # fig_contour_overlay = plotter.plot_image(contour_overlay)
+    # fig_all = gridplot([[fig_rgb, fig_contour_overlay, fig_mesh_overlay]], toolbar_location=None)
     vis_dir = example_dir / "visualizations"
     vis_dir.mkdir(exist_ok=True)
-    export_png(fig_mesh_overlay, filename=vis_dir / "mesh_overlay.png")
-    export_png(fig_contour_overlay, filename=vis_dir / "contour_overlay.png")
-    export_png(fig_all, filename=vis_dir / "all_results.png")
+
+    imageio.imwrite(vis_dir / "contour_overlay.png", contour_overlay)
+    imageio.imwrite(vis_dir / "render.png", renderings.rgb)
+    imageio.imwrite(vis_dir / "orig.png", rgb)
+
+    # export_png(fig_mesh_overlay, filename=vis_dir / "mesh_overlay.png")
+    # export_png(fig_contour_overlay, filename=vis_dir / "contour_overlay.png")
+    # export_png(fig_all, filename=vis_dir / "all_results.png")
     logger.info(f"Wrote visualizations to {vis_dir}.")
     return
 
