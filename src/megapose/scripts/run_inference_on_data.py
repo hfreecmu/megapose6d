@@ -30,8 +30,12 @@ from megapose.visualization.utils import make_contour_overlay
 import imageio.v2 as imageio
 import cv2
 import torch
+import open3d
+from scipy.spatial.transform import Rotation as R
 from vine_prune.utils.io import read_json, write_json
+from vine_prune.utils.general_utils import create_pose
 from vine_prune.utils.paths import OBJECT_DIR
+from vine_prune.utils.cloud import write_pcd
 
 logger = get_logger(__name__)
 
@@ -39,13 +43,14 @@ logger = get_logger(__name__)
 def load_observation(
     image_path: Path,
     load_depth: bool = False,
+    depth_path: Path = None,
 ) -> Tuple[np.ndarray, Union[None, np.ndarray]]:
     
     rgb = np.array(Image.open(image_path), dtype=np.uint8)
 
     depth = None
     if load_depth:
-        raise RuntimeError('not supported')
+        depth = np.array(Image.open(depth_path), dtype=np.float32) / 1000
 
     return rgb, depth
 
@@ -54,26 +59,26 @@ def load_observation_tensor(
     image_path: Path,
     K: np.array,
     load_depth: bool = False,
+    depth_path: Path = None,
 ) -> ObservationTensor:
-    rgb, depth = load_observation(image_path, load_depth)
+    rgb, depth = load_observation(image_path, load_depth, depth_path)
     observation = ObservationTensor.from_numpy(rgb, depth, K)
     return observation
 
 
-def load_object_data(mask_path: Path, ids_to_obj: Dict) -> List[ObjectData]: 
-    mask_im = cv2.imread(mask_path, -1)
-
+def load_object_data(mask_dir, label_identifiers, filename) -> List[ObjectData]: 
     object_data = []
-    for key in ids_to_obj:
-        label = ids_to_obj[key]
-        if label in ['hand', 'human']:
-            continue
+    for li in label_identifiers:
+        mask_path = os.path.join(mask_dir, li, 'mask_obj', filename)
 
-        seg_key = int(key)
-        seg_inds = np.argwhere(mask_im == seg_key)
+        mask_im = cv2.imread(mask_path, -1)
+        seg_inds = np.argwhere(mask_im > 0)
 
         y0, x0 = seg_inds.min(axis=0).tolist()
         y1, x1 = seg_inds.max(axis=0).tolist()
+
+        label, seg_key = li.split('_')
+        seg_key = int(seg_key)
 
         entry = {
             'label': label,
@@ -89,23 +94,29 @@ def load_object_data(mask_path: Path, ids_to_obj: Dict) -> List[ObjectData]:
 
 
 def load_detections(
-    mask_path: Path,
-    ids_to_obj: Dict,
+    mask_dir, label_identifiers, filename
 ) -> DetectionsType:
-    input_object_data = load_object_data(mask_path, ids_to_obj)
+    input_object_data = load_object_data(mask_dir, label_identifiers, filename)
     detections = make_detections_from_object_data(input_object_data).cuda()
     return detections, input_object_data
 
-
-def make_object_dataset(object_names: str) -> RigidObjectDataset:
+def make_object_dataset(label_identifiers: str, data_dir: str) -> RigidObjectDataset:
     rigid_objects = []
     mesh_units = "m"
 
-    for object_name in object_names:
+    objects = set()
+    for li in label_identifiers:
+        object_name = li.split('_')[0]
         label = object_name
 
-        object_dir = os.path.join(OBJECT_DIR, object_name)
-        mesh_path = os.path.join(object_dir, 'splat', 'obj_mesh.ply')
+        if label in objects:
+            continue
+
+        objects.add(label)
+
+        # object_dir = os.path.join(OBJECT_DIR, object_name)
+        # mesh_path = os.path.join(object_dir, 'generated_meshes', 'obj_mesh.ply')
+        mesh_path = os.path.join(data_dir, 'meshes', li, 'object_mesh_pca_pre_opt.obj')
         rigid_objects.append(RigidObject(label=label, mesh_path=mesh_path, mesh_units=mesh_units))
 
     rigid_object_dataset = RigidObjectDataset(rigid_objects)
@@ -143,6 +154,8 @@ def run_inference(
     model_info = NAMED_MODELS[model_name]
 
     image_dir = os.path.join(data_dir, 'undistorted')
+    depth_dir = os.path.join(data_dir, 'depth')
+
     filenames = []
     for filename in os.listdir(image_dir):
         if not (filename.endswith('.jpg') or filename.endswith('.png')):
@@ -162,23 +175,22 @@ def run_inference(
     dims_path = os.path.join(data_dir, 'cam_dims.txt')
     dims = np.loadtxt(dims_path).astype(int).tolist()
 
-    mask_dir = os.path.join(data_dir, 'mask_scene')
-    ids_to_obj_dict = read_json(os.path.join(mask_dir, 'id_to_objects.json'))
+    contact_info_path = os.path.join(data_dir, 'contact_info.json')
+    contact_res = read_json(contact_info_path)
+    contact_info = contact_res['contact_info']
 
-    ids_to_obj = ids_to_obj_dict['id_to_obj']
+    label_identifiers = list(contact_info.keys())
 
-    object_names = set()
-    for key in ids_to_obj:
-        if ids_to_obj[key] in ['hand', 'human']:
-            continue
-        object_names.add(ids_to_obj[key])
+    mesh_dir = os.path.join(data_dir, 'meshes')
+    if not os.path.exists(mesh_dir):
+        os.mkdir(mesh_dir)
 
-    output_dir = os.path.join(data_dir, 'obj_pose_init')
+    output_dir = os.path.join(mesh_dir, 'megapose')
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
 
     logger.info(f"Loading model {model_name}.")
-    object_dataset = make_object_dataset(object_names)
+    object_dataset = make_object_dataset(label_identifiers, data_dir)
     pose_estimator = load_named_model(model_name, object_dataset).cuda()
 
     if vis:
@@ -193,18 +205,19 @@ def run_inference(
     logger.info(f"Running inference.")
     for filename in filenames:
         image_path = os.path.join(image_dir, filename)
+        depth_path = os.path.join(depth_dir, filename.replace('.jpg', '.png'))
+
         observation = load_observation_tensor(
-            image_path, K, load_depth=False
+            image_path, K, 
+            # load_depth=False, 
+            load_depth=model_info["requires_depth"],
+            depth_path=depth_path
         ).cuda()
 
-        mask_path = os.path.join(data_dir, 'mask_scene', filename.replace('.jpg', '.png'))
+        mask_dir = os.path.join(data_dir, 'masks', 'objects')
 
-        detections, object_data = load_detections(mask_path, ids_to_obj)
+        detections, object_data = load_detections(mask_dir, label_identifiers, filename.replace('.jpg', '.png'))
         detections = detections.cuda()
-        # WARNING
-        # instance id on object data will be different than detections and object_data_out
-        # this is because it is overwwritten in load_detections
-        # the instance id on object_data is the seg_key which we want to save
 
         output, _ = pose_estimator.run_inference_pipeline(
             observation, detections=detections, **model_info["inference_parameters"],
@@ -214,14 +227,15 @@ def run_inference(
         output_path = os.path.join(output_dir, filename.split('.')[0] + '_raw.json')
         object_data_out = save_predictions(output_path, output)
 
-        instance_id_inds = [[None, None] for _ in range(len(object_data))]
+        instance_id_inds = {}
 
         for odo_ind, odo in enumerate(object_data_out):
             label = odo.label
             score = odo.score
             instance_id = odo.instance_id
 
-            assert object_data[instance_id].label == label
+            if not instance_id in instance_id_inds:
+                instance_id_inds[instance_id] = [None, None]
 
             saved_odo_ind, instance_id_score = instance_id_inds[instance_id]
 
@@ -229,15 +243,12 @@ def run_inference(
                 score > instance_id_score):
                 instance_id_inds[instance_id] = [odo_ind, score]
 
-        label_count = {}
-        for object_name in object_names:
-            label_count[object_name] = 0
-
         is_vis_max = [False] * len(object_data_out)
         vis_custom_labels = [None] * len(object_data_out)
         res_dict = {}
-        for ii_ind in range(len(instance_id_inds)):
-            odo_ind, _ = instance_id_inds[ii_ind]
+        
+        for instance_id in instance_id_inds:
+            odo_ind, _ = instance_id_inds[instance_id]
 
             odo = object_data_out[odo_ind]
             two = odo.TWO
@@ -245,22 +256,21 @@ def run_inference(
             label = odo.label
 
             # already asserted but doing again for safety
-            assert label == object_data[ii_ind].label
+            assert odo.instance_id == instance_id
 
-            custom_label = f'{label}_{label_count[label]}'
-            label_count[label] += 1
+            label_identifier = '_'.join([label, str(instance_id)])
 
             entry = {
                 "label": label,
                 "TWO": transform_to_list(two),
                 "score": score,
 
-                'seg_key': int(object_data[ii_ind].instance_id)
+                'seg_key': instance_id
             }
 
-            res_dict[custom_label] = entry
+            res_dict[label_identifier] = entry
 
-            vis_custom_labels[odo_ind] = custom_label
+            vis_custom_labels[odo_ind] = label_identifier
             is_vis_max[odo_ind] = True
 
         res_path = os.path.join(output_dir, filename.split('.')[0] + '.json')
@@ -300,11 +310,31 @@ def run_inference(
                 comb_im = np.hstack((orig_im, renderings.rgb))
 
                 if is_vis_max[ind]:
-                    vis_path = os.path.join(output_dir, f'{vis_custom_labels[ind]}.jpg')
+                    vis_path = os.path.join(output_dir, f'{vis_custom_labels[ind]}_{filename.split(".")[0]}.jpg')
                     imageio.imwrite(vis_path, comb_im)
 
                 vis_path = os.path.join(subdir, f'{ind}.jpg')
                 imageio.imwrite(vis_path, comb_im)
+
+        # process result here
+        for label_identifier in res_dict:
+            two = res_dict[label_identifier]['TWO']
+            pca_pcd_path = os.path.join(mesh_dir, label_identifier, 'mesh_pca_scale_pre_opt.pcd')
+            pca_pcd = open3d.io.read_point_cloud(pca_pcd_path)
+            pca_points = np.array(pca_pcd.points)
+
+            R_mega =  R.from_quat(two[0]).as_matrix()
+            t_mega = two[1]
+
+            obj_points = pca_points @ R_mega.T + t_mega
+            pca_pcd.points = open3d.utility.Vector3dVector(obj_points)
+
+            rot_pcd_path = os.path.join(mesh_dir, label_identifier, 'mesh_rot_pre_opt.pcd')
+            write_pcd(rot_pcd_path, pca_pcd)
+
+            M_obj = create_pose(R_mega, t_mega)
+            rot_path = os.path.join(mesh_dir, label_identifier, 'object_pose_rot_pre_opt.txt')
+            np.savetxt(rot_path, M_obj)
 
 # def make_output_visualization(
 #     example_dir: Path,
@@ -374,7 +404,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", type=str, required=True)
     parser.add_argument("--model", type=str, default="megapose-1.0-RGB-multi-hypothesis")
-    parser.add_argument("--target_ind", type=int, default=0)
+    # parser.add_argument("--model", type=str, default="megapose-1.0-RGBD")
+    # parser.add_argument("--model", type=str, default="megapose-1.0-RGB-multi-hypothesis-icp")
+    parser.add_argument("--target_ind", type=int, default=None)
     parser.add_argument('--vis', action='store_true')
     args = parser.parse_args()
 

@@ -212,11 +212,13 @@ def make_cameras(camera_data: List[CameraData]) -> PandasTensorCollection:
 
 
 def make_detections_from_object_data(object_data: List[ObjectData]) -> DetectionsType:
+    instance_ids = np.array([od.instance_id for od in object_data])
     infos = pd.DataFrame(
         dict(
             label=[data.label for data in object_data],
             batch_im_id=0,
-            instance_id=np.arange(len(object_data)),
+            # instance_id=np.arange(len(object_data)),
+            instance_id=instance_ids
         )
     )
     bboxes = torch.as_tensor(

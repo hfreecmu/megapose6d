@@ -44,6 +44,15 @@ NAMED_MODELS = {
             "run_depth_refiner": True,
         },
     },
+    "megapose-1.0-RGBD-multi-hypothesis": {
+        "coarse_run_id": "coarse-rgb-906902141",
+        "refiner_run_id": "refiner-rgbd-288182519",
+        "requires_depth": True,
+        "inference_parameters": {
+            "n_refiner_iterations": 5,
+            "n_pose_hypotheses": 5,
+        },
+    },
 }
 
 
