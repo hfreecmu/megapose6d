@@ -33,7 +33,7 @@ import torch
 import open3d
 from scipy.spatial.transform import Rotation as R
 from vine_prune.utils.io import read_json, write_json
-from vine_prune.utils.general_utils import create_pose
+from vine_prune.utils.general_utils import create_pose, get_label_identifiers
 from vine_prune.utils.paths import OBJECT_DIR
 from vine_prune.utils.cloud import write_pcd
 
@@ -175,15 +175,9 @@ def run_inference(
     dims_path = os.path.join(data_dir, 'cam_dims.txt')
     dims = np.loadtxt(dims_path).astype(int).tolist()
 
-    contact_info_path = os.path.join(data_dir, 'contact_info.json')
-    contact_res = read_json(contact_info_path)
-    contact_info = contact_res['contact_info']
-
-    label_identifiers = list(contact_info.keys())
-
     mesh_dir = os.path.join(data_dir, 'meshes')
-    if not os.path.exists(mesh_dir):
-        os.mkdir(mesh_dir)
+
+    label_identifiers = get_label_identifiers(data_dir)
 
     output_dir = os.path.join(mesh_dir, 'megapose')
     if not os.path.exists(output_dir):
