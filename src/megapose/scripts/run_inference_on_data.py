@@ -177,7 +177,7 @@ def run_inference(
 
     mesh_dir = os.path.join(data_dir, 'meshes')
 
-    label_identifiers = get_label_identifiers(data_dir)
+    label_identifiers, is_scene = get_label_identifiers(data_dir, include_scene=True)
 
     output_dir = os.path.join(mesh_dir, 'megapose')
     if not os.path.exists(output_dir):
